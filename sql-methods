@@ -1,0 +1,286 @@
+-- ====================================================================================================
+-- ||                                                                                                ||
+-- ||                      COMPREHENSIVE SQL SERVER REFERENCE FILE                                   ||
+-- ||                                                                                                ||
+-- ||    Author: Jay Dethalia                                                                              ||
+-- ||    Date: 2025-08-28                                                                            ||
+-- ||    Purpose: A single, reusable file covering stored procedures, joins, indexes,              ||
+-- ||             aggregation, and common functions with detailed explanations.                       ||
+-- ||                                                                                                ||
+-- ====================================================================================================
+
+
+-- ====================================================================================================
+-- ||                                                                                                ||
+-- ||    SECTION 1: DEMO SETUP (TABLES & TYPES)                                                      ||
+-- ||    Run this section first to create the necessary objects for the examples.                    ||
+-- ||                                                                                                ||
+-- ====================================================================================================
+
+-- Drop existing objects to make the script runnable multiple times.
+IF TYPE_ID(N'dbo.ProductListType') IS NOT NULL DROP TYPE dbo.ProductListType;
+IF OBJECT_ID(N'dbo.Orders', N'U') IS NOT NULL DROP TABLE dbo.Orders;
+IF OBJECT_ID(N'dbo.Products', N'U') IS NOT NULL DROP TABLE dbo.Products;
+IF OBJECT_ID(N'dbo.Categories', N'U') IS NOT NULL DROP TABLE dbo.Categories;
+IF OBJECT_ID(N'dbo.Customers', N'U') IS NOT NULL DROP TABLE dbo.Customers;
+IF OBJECT_ID(N'dbo.usp_ComprehensiveSyntaxReference', N'P') IS NOT NULL DROP PROCEDURE dbo.usp_ComprehensiveSyntaxReference;
+GO
+
+-- Create Tables
+CREATE TABLE dbo.Customers (
+    CustomerID INT PRIMARY KEY IDENTITY,
+    CustomerName NVARCHAR(100) NOT NULL,
+    Country NVARCHAR(50),
+    IsActive BIT DEFAULT 1
+);
+
+CREATE TABLE dbo.Categories (
+    CategoryID INT PRIMARY KEY IDENTITY,
+    CategoryName NVARCHAR(100) NOT NULL
+);
+
+CREATE TABLE dbo.Products (
+    ProductID INT PRIMARY KEY IDENTITY(101,1),
+    ProductName NVARCHAR(100) NOT NULL,
+    CategoryID INT FOREIGN KEY REFERENCES dbo.Categories(CategoryID),
+    UnitPrice DECIMAL(10, 2) NOT NULL
+);
+
+CREATE TABLE dbo.Orders (
+    OrderID INT PRIMARY KEY IDENTITY,
+    CustomerID INT FOREIGN KEY REFERENCES dbo.Customers(CustomerID),
+    OrderDate DATETIME2 NOT NULL
+);
+GO
+
+-- Create a Table-Valued Parameter (TVP) type. This lets you pass a table of data to a stored procedure.
+CREATE TYPE dbo.ProductListType AS TABLE (
+    ProductName NVARCHAR(100) NOT NULL,
+    CategoryID INT NOT NULL,
+    UnitPrice DECIMAL(10, 2) NOT NULL
+);
+GO
+
+-- Insert Sample Data
+INSERT INTO dbo.Customers (CustomerName, Country) VALUES
+('John Smith', 'USA'), ('Maria Garcia', 'Spain'), ('Li Wei', 'China'), ('Peter Jones', 'USA');
+
+INSERT INTO dbo.Categories (CategoryName) VALUES ('Electronics'), ('Books'), ('Office Supplies');
+
+INSERT INTO dbo.Products (ProductName, CategoryID, UnitPrice) VALUES
+('Laptop', 1, 1200.00), ('Wireless Mouse', 1, 25.50), ('SQL Cookbook', 2, 49.99),
+('Mechanical Keyboard', 1, 150.00), ('Stapler', 3, 12.75);
+
+INSERT INTO dbo.Orders (CustomerID, OrderDate) VALUES
+(1, '2025-03-15'), (2, '2025-03-16'), (1, '2025-04-01'), (4, '2025-04-05');
+GO
+
+
+-- ====================================================================================================
+-- ||                                                                                                ||
+-- ||    SECTION 2: STORED PROCEDURE EXAMPLE                                                         ||
+-- ||    A procedure that demonstrates parameters, variables, transactions, error handling, etc.     ||
+-- ||                                                                                                ||
+-- ====================================================================================================
+
+CREATE OR ALTER PROCEDURE dbo.usp_ComprehensiveSyntaxReference
+    -- Parameters: Inputs and outputs for the procedure.
+    @MinUnitPrice DECIMAL(10, 2),                   -- Standard INPUT parameter
+    @CategoryID INT = NULL,                         -- Optional INPUT parameter with a default value
+    @ProductsAffected INT OUTPUT,                   -- OUTPUT parameter to pass a value back
+    @ProductsToUpsert dbo.ProductListType READONLY  -- Table-Valued Parameter (TVP) for bulk data
+AS
+BEGIN
+    -- Best Practices: These settings improve performance and data integrity.
+    SET NOCOUNT ON;     -- Prevents sending 'rows affected' messages, reducing network traffic.
+    SET XACT_ABORT ON;  -- Ensures that if an error occurs, the entire transaction is rolled back.
+
+    -- Variable Declaration: Used to store values during execution.
+    DECLARE @CurrentDateTime DATETIME2 = GETUTCDATE();
+    DECLARE @LogMessage NVARCHAR(MAX);
+
+    -- Error Handling & Transactions: The modern standard for safe data modification.
+    BEGIN TRY
+        -- Start a transaction to ensure all operations are atomic (all-or-nothing).
+        BEGIN TRANSACTION;
+
+        -- DML Operation (MERGE): A powerful statement to INSERT, UPDATE, or DELETE in one go.
+        MERGE INTO dbo.Products AS Target
+        USING @ProductsToUpsert AS Source ON Target.ProductName = Source.ProductName
+        WHEN MATCHED THEN -- If product exists, update it.
+            UPDATE SET Target.UnitPrice = Source.UnitPrice
+        WHEN NOT MATCHED BY TARGET THEN -- If product is new, insert it.
+            INSERT (ProductName, CategoryID, UnitPrice)
+            VALUES (Source.ProductName, Source.CategoryID, Source.UnitPrice);
+
+        -- Set the OUTPUT parameter with the number of rows affected.
+        SET @ProductsAffected = @@ROWCOUNT;
+
+        -- Commit the transaction to make the changes permanent.
+        COMMIT TRANSACTION;
+
+    END TRY
+    BEGIN CATCH
+        -- This block executes only if an error occurs in the TRY block.
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION; -- Roll back any partial changes if an error occurred.
+
+        -- Capture error information for logging or re-throwing.
+        SET @LogMessage = ERROR_MESSAGE();
+        PRINT @LogMessage;
+
+        -- Re-throw the error to the calling application.
+        THROW;
+    END CATCH;
+
+    -- Final Result Set: Return data to the caller.
+    -- This query demonstrates CTEs and Window Functions.
+    ;WITH ProductCTE AS (
+        SELECT
+            p.ProductName,
+            c.CategoryName,
+            p.UnitPrice,
+            -- Window Function: Ranks products by price within each category without collapsing rows.
+            DENSE_RANK() OVER(PARTITION BY p.CategoryID ORDER BY p.UnitPrice DESC) AS PriceRank
+        FROM dbo.Products AS p
+        INNER JOIN dbo.Categories AS c ON p.CategoryID = c.CategoryID
+        WHERE p.UnitPrice >= @MinUnitPrice
+    )
+    SELECT ProductName, CategoryName, UnitPrice, PriceRank
+    FROM ProductCTE
+    WHERE PriceRank <= 5;
+
+    -- Return 0 for success.
+    RETURN 0;
+END;
+GO
+
+
+-- ====================================================================================================
+-- ||                                                                                                ||
+-- ||    SECTION 3: CONCEPTS & EXPLANATIONS                                                          ||
+-- ||    Detailed notes on Joins, Indexes, Aggregation, and Functions.                               ||
+-- ||                                                                                                ||
+-- ====================================================================================================
+
+/******************************************************************************************************
+*** 3.1. TYPES OF JOINS *******************************************************************************
+******************************************************************************************************/
+
+-- INNER JOIN: Returns only records with matches in BOTH tables.
+-- When to use: When you only want complete data. E.g., "Show customers who have placed orders."
+SELECT c.CustomerName, o.OrderDate
+FROM dbo.Customers c
+INNER JOIN dbo.Orders o ON c.CustomerID = o.CustomerID;
+
+
+-- LEFT JOIN: Returns ALL records from the LEFT table, and matching records from the right.
+-- When to use: When you need all records from one table, regardless of a match. E.g., "Show ALL customers and any orders they may have."
+SELECT c.CustomerName, o.OrderDate
+FROM dbo.Customers c
+LEFT JOIN dbo.Orders o ON c.CustomerID = o.CustomerID;
+
+
+-- FULL OUTER JOIN: Returns all records from BOTH tables, matching where possible.
+-- When to use: To find discrepancies or get a complete dataset from two tables. E.g., "Show all customers and all orders, linked up where possible."
+SELECT c.CustomerName, o.OrderDate
+FROM dbo.Customers c
+FULL OUTER JOIN dbo.Orders o ON c.CustomerID = o.CustomerID;
+
+
+/******************************************************************************************************
+*** 3.2. INDEXES **************************************************************************************
+******************************************************************************************************/
+
+-- An index speeds up data retrieval (SELECT) but slows down data modification (INSERT, UPDATE, DELETE).
+
+-- Clustered Index: Physically sorts the table data. Only ONE per table.
+-- When to use: Almost always on the Primary Key. Ideal for range queries (e.g., WHERE OrderDate BETWEEN ...).
+-- SQL Server creates this automatically on a PRIMARY KEY constraint.
+
+-- Non-Clustered Index: A separate lookup structure that points back to the data. Many per table are allowed.
+-- When to use: On Foreign Key columns and columns frequently used in WHERE, JOIN, and ORDER BY clauses.
+CREATE NONCLUSTERED INDEX IX_Orders_CustomerID ON dbo.Orders(CustomerID);
+
+
+/******************************************************************************************************
+*** 3.3. AGGREGATION (GROUP BY & HAVING) **************************************************************
+******************************************************************************************************/
+
+-- GROUP BY: Groups rows into a summary row. Used with aggregate functions (COUNT, SUM, AVG, MIN, MAX).
+-- HAVING: Filters the results AFTER aggregation has occurred.
+
+-- WHERE filters rows BEFORE grouping.
+-- HAVING filters groups AFTER grouping.
+
+-- Example: Show countries that have more than 1 active customer.
+SELECT
+    Country,
+    COUNT(CustomerID) AS NumberOfCustomers
+FROM dbo.Customers
+WHERE IsActive = 1              -- 1. Filter individual rows first.
+GROUP BY Country                -- 2. Group the remaining rows.
+HAVING COUNT(CustomerID) > 1;   -- 3. Filter the resulting groups.
+
+
+/******************************************************************************************************
+*** 3.4. COMMON FUNCTIONS & NULL HANDLING *************************************************************
+******************************************************************************************************/
+
+-- COALESCE vs. ISNULL: Both provide a default value for NULLs.
+
+-- COALESCE(value1, value2, value3, ...): ANSI standard, takes multiple arguments, returns the first non-NULL value.
+-- ISNULL(value, replacement): SQL Server specific, takes only two arguments.
+
+-- When to use: Prefer COALESCE. It's more flexible and portable.
+-- E.g., find the first available contact method: COALESCE(MobilePhone, HomePhone, 'N/A')
+SELECT CustomerName, COALESCE(Country, 'Unknown') AS Country
+FROM dbo.Customers;
+
+
+-- CAST vs. CONVERT: Both change data types.
+
+-- CAST(value AS datatype): ANSI standard.
+-- CONVERT(datatype, value, [style]): SQL Server specific, includes an optional style code for formatting, especially for dates.
+
+-- When to use: Use CAST for general-purpose conversion. Use CONVERT when you need specific date/time formatting.
+SELECT
+    CAST('2025-08-28' AS DATETIME2) AS CastResult,
+    CONVERT(VARCHAR, GETDATE(), 103) AS ConvertResult; -- 103 = dd/mm/yyyy format
+
+
+-- TRY_CAST / TRY_CONVERT: Safe conversion functions.
+-- When to use: When dealing with "dirty" data that might fail to convert. They return NULL instead of an error.
+SELECT TRY_CAST('ABC' AS INT); -- Returns NULL
+
+
+-- ====================================================================================================
+-- ||                                                                                                ||
+-- ||    SECTION 4: EXECUTION EXAMPLE                                                                ||
+-- ||    How to run the stored procedure and see the results.                                        ||
+-- ||                                                                                                ||
+-- ====================================================================================================
+
+PRINT '===== EXECUTING THE STORED PROCEDURE =====';
+
+-- 1. Declare variables to hold the output parameter and the TVP.
+DECLARE @AffectedRows INT;
+DECLARE @ProductData dbo.ProductListType;
+
+-- 2. Populate the TVP with data to be inserted or updated.
+INSERT INTO @ProductData (ProductName, CategoryID, UnitPrice) VALUES
+('Laptop', 1, 1250.99),                 -- This will be an UPDATE
+('High-Quality Stapler', 3, 15.00);     -- This will be an INSERT
+
+-- 3. Execute the procedure.
+EXEC dbo.usp_ComprehensiveSyntaxReference
+    @MinUnitPrice = 20.00,
+    @ProductsAffected = @AffectedRows OUTPUT,
+    @ProductsToUpsert = @ProductData;
+
+-- 4. Check the output parameter.
+SELECT @AffectedRows AS 'Rows Affected by MERGE';
+
+-- 5. Verify the final data.
+SELECT * FROM dbo.Products ORDER BY ProductID;
+GO
