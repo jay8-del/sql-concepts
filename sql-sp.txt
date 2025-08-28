@@ -1,0 +1,330 @@
+-- ==========================================================================================
+-- ||                                                                                      ||
+-- ||    COMPREHENSIVE STORED PROCEDURE SYNTAX & CONCEPT REFERENCE                         ||
+-- ||                                                                                      ||
+-- ||    Author: Jay                                                                    ||
+-- ||    Date: 2025-08-28                                                                  ||
+-- ||    Purpose: To provide a single, well-commented stored procedure that demonstrates    ||
+-- ||             a wide range of common T-SQL concepts for reference purposes.            ||
+-- ||                                                                                      ||
+-- ==========================================================================================
+
+-- Drop existing objects if they exist, to make the script runnable multiple times.
+IF TYPE_ID(N'dbo.ProductListType') IS NOT NULL DROP TYPE dbo.ProductListType;
+IF OBJECT_ID(N'dbo.Products', N'U') IS NOT NULL DROP TABLE dbo.Products;
+IF OBJECT_ID(N'dbo.Categories', N'U') IS NOT NULL DROP TABLE dbo.Categories;
+IF OBJECT_ID(N'dbo.usp_ComprehensiveSyntaxReference', N'P') IS NOT NULL DROP PROCEDURE dbo.usp_ComprehensiveSyntaxReference;
+GO
+
+-- ==========================================================================================
+-- 1. SETUP: CREATE TABLES AND TABLE-VALUED PARAMETER (TVP) TYPE
+-- ==========================================================================================
+-- We need some tables to work with.
+
+CREATE TABLE dbo.Categories (
+    CategoryID INT PRIMARY KEY IDENTITY(1,1),
+    CategoryName NVARCHAR(100) NOT NULL
+);
+
+CREATE TABLE dbo.Products (
+    ProductID INT PRIMARY KEY IDENTITY(101,1),
+    ProductName NVARCHAR(100) NOT NULL,
+    CategoryID INT FOREIGN KEY REFERENCES dbo.Categories(CategoryID),
+    UnitPrice DECIMAL(10, 2) NOT NULL,
+    LastUpdated DATETIME2 DEFAULT GETUTCDATE()
+);
+GO
+
+-- Insert some sample data.
+INSERT INTO dbo.Categories (CategoryName) VALUES ('Electronics'), ('Books'), ('Office Supplies');
+INSERT INTO dbo.Products (ProductName, CategoryID, UnitPrice) VALUES
+('Laptop', 1, 1200.00), ('Wireless Mouse', 1, 25.50), ('SQL Cookbook', 2, 49.99),
+('Mechanical Keyboard', 1, 150.00), ('The C# Player''s Guide', 2, 45.00), ('Stapler', 3, 12.75);
+GO
+
+-- A Table-Valued Parameter (TVP) allows you to pass a table of data from a client application
+-- or another T-SQL batch to a stored procedure. It's highly efficient for bulk operations.
+CREATE TYPE dbo.ProductListType AS TABLE (
+    ProductName NVARCHAR(100) NOT NULL,
+    CategoryID INT NOT NULL,
+    UnitPrice DECIMAL(10, 2) NOT NULL
+);
+GO
+
+
+-- ==========================================================================================
+-- 2. THE STORED PROCEDURE DEFINITION
+-- ==========================================================================================
+CREATE OR ALTER PROCEDURE dbo.usp_ComprehensiveSyntaxReference
+    -- ===== PARAMETERS =====
+    -- Parameters are the inputs and outputs for your procedure.
+
+    -- A. Standard INPUT parameter.
+    @MinUnitPrice DECIMAL(10, 2),
+
+    -- B. An INPUT parameter with a DEFAULT value, making it optional.
+    @CategoryID INT = NULL,
+
+    -- C. An OUTPUT parameter, used to pass a value back to the calling batch.
+    @ProductsAffected INT OUTPUT,
+
+    -- D. A Table-Valued Parameter (TVP) to accept a list of products.
+    @ProductsToUpsert dbo.ProductListType READONLY,
+
+    -- E. A flag parameter to control logic inside the procedure.
+    @IsTestRun BIT = 0
+AS
+BEGIN
+    -- ==========================================================================================
+    -- 3. INITIAL SETUP & BEST PRACTICES
+    -- ==========================================================================================
+
+    -- SET NOCOUNT ON prevents the sending of DONE_IN_PROC messages for each statement
+    -- in a stored procedure. This reduces network traffic and is a standard best practice.
+    SET NOCOUNT ON;
+
+    -- SET XACT_ABORT ON specifies that if a T-SQL statement raises a run-time error,
+    -- the entire transaction is terminated and rolled back. This is crucial for data integrity.
+    SET XACT_ABORT ON;
+
+    -- ==========================================================================================
+    -- 4. VARIABLE DECLARATION
+    -- ==========================================================================================
+    -- Variables are used to store values during the execution of the procedure.
+
+    DECLARE @CurrentDateTime DATETIME2 = GETUTCDATE(); -- To hold the current timestamp.
+    DECLARE @ProcedureName NVARCHAR(128) = OBJECT_NAME(@@PROCID); -- To get the name of this SP.
+    DECLARE @LogMessage NVARCHAR(MAX); -- For building dynamic log or error messages.
+
+    -- ==========================================================================================
+    -- 5. ERROR HANDLING & TRANSACTIONS (TRY/CATCH BLOCK)
+    -- ==========================================================================================
+    -- The TRY/CATCH block is the modern way to handle errors gracefully.
+    -- A transaction ensures that a series of operations are all-or-nothing (atomic).
+
+    BEGIN TRY
+        -- Start a transaction. All DML operations below will be part of this unit.
+        BEGIN TRANSACTION;
+
+        -- A. Parameter Validation: Always check your inputs.
+        IF @MinUnitPrice <= 0
+        BEGIN
+            -- THROW is the modern way to raise an error. It's simpler than RAISERROR.
+            -- Error number must be > 50000.
+            THROW 50001, 'The minimum unit price must be greater than zero.', 1;
+        END
+
+        -- ======================================================================================
+        -- 6. DML OPERATIONS (INSERT, UPDATE, DELETE via MERGE)
+        -- ======================================================================================
+        -- The MERGE statement is a powerful way to perform INSERT, UPDATE, or DELETE
+        -- operations on a target table based on the results of a join with a source table.
+        -- Here, we use the TVP as our source.
+
+        MERGE INTO dbo.Products AS Target
+        USING @ProductsToUpsert AS Source
+        ON Target.ProductName = Source.ProductName -- The condition to match rows.
+        -- A. WHEN MATCHED: If a product with the same name exists, UPDATE its price.
+        WHEN MATCHED THEN
+            UPDATE SET
+                Target.UnitPrice = Source.UnitPrice,
+                Target.LastUpdated = @CurrentDateTime
+        -- B. WHEN NOT MATCHED BY TARGET: If a product from the source doesn't exist in the target, INSERT it.
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT (ProductName, CategoryID, UnitPrice, LastUpdated)
+            VALUES (Source.ProductName, Source.CategoryID, Source.UnitPrice, @CurrentDateTime)
+        -- C. WHEN NOT MATCHED BY SOURCE: If a product exists in the target but not the source, DELETE it (optional).
+        --    (We'll comment this out, but this is the syntax)
+        -- WHEN NOT MATCHED BY SOURCE AND Target.CategoryID = @CategoryID THEN
+        --    DELETE
+        ; -- MERGE statements must be terminated with a semicolon.
+
+        -- Set the OUTPUT parameter with the number of rows affected by the last statement.
+        SET @ProductsAffected = @@ROWCOUNT;
+
+
+        -- ======================================================================================
+        -- 7. TEMPORARY TABLES & TABLE VARIABLES
+        -- ======================================================================================
+        -- Used for storing intermediate results.
+
+        -- A. Table Variable (@): Scoped to the current batch. Good for small datasets.
+        -- Stored in memory (mostly). Not involved in transactions in the same way temp tables are.
+        DECLARE @CategoryCounts TABLE (
+            CategoryID INT,
+            ProductCount INT
+        );
+
+        INSERT INTO @CategoryCounts (CategoryID, ProductCount)
+        SELECT CategoryID, COUNT(ProductID)
+        FROM dbo.Products
+        GROUP BY CategoryID;
+
+        -- B. Local Temporary Table (#): Scoped to the current session. Good for larger datasets.
+        -- Stored in tempdb. Can be indexed. Fully supports transactions.
+        CREATE TABLE #ExpensiveProducts (
+            ProductID INT PRIMARY KEY,
+            ProductName NVARCHAR(100),
+            PriceRank INT
+        );
+
+        -- ======================================================================================
+        -- 8. ADVANCED SELECT (CTE, WINDOW FUNCTIONS, JOINS, PAGING)
+        -- ======================================================================================
+
+        -- A. Common Table Expression (CTE): A temporary, named result set that you can
+        -- reference within a SELECT, INSERT, UPDATE, or DELETE statement. Improves readability.
+        ;WITH ProductCTE AS
+        (
+            SELECT
+                p.ProductID,
+                p.ProductName,
+                c.CategoryName,
+                p.UnitPrice,
+                -- B. Window Function (RANK/DENSE_RANK/ROW_NUMBER): Performs a calculation
+                -- across a set of table rows. Here we rank products by price within each category.
+                DENSE_RANK() OVER(PARTITION BY p.CategoryID ORDER BY p.UnitPrice DESC) AS PriceRankInCategory
+            FROM
+                dbo.Products AS p
+            -- C. JOINs: Combine rows from two or more tables based on a related column.
+            INNER JOIN
+                dbo.Categories AS c ON p.CategoryID = c.CategoryID
+            -- D. WHERE Clause: Filters records based on specified conditions.
+            WHERE
+                p.UnitPrice >= @MinUnitPrice
+                AND (@CategoryID IS NULL OR p.CategoryID = @CategoryID) -- Optional filtering
+        )
+        -- Populate the temp table from our CTE
+        INSERT INTO #ExpensiveProducts (ProductID, ProductName, PriceRank)
+        SELECT ProductID, ProductName, PriceRank
+        FROM ProductCTE
+        WHERE PriceRankInCategory <= 5;
+
+
+        -- ======================================================================================
+        -- 9. CONTROL FLOW (IF/ELSE & CASE)
+        -- ======================================================================================
+        IF @IsTestRun = 1
+        BEGIN
+            -- If this is a test run, we don't want to commit the changes.
+            SET @LogMessage = 'TEST RUN: Transaction will be rolled back.';
+            PRINT @LogMessage;
+            ROLLBACK TRANSACTION;
+            PRINT 'Transaction Rolled Back.';
+        END
+        ELSE
+        BEGIN
+            -- If it's not a test run, commit the transaction to make the changes permanent.
+            COMMIT TRANSACTION;
+            PRINT 'Transaction Committed Successfully.';
+        END
+
+    END TRY
+    BEGIN CATCH
+        -- This block executes only if an error occurs in the TRY block.
+
+        -- Check if there is an active transaction. If so, roll it back to maintain data integrity.
+        IF @@TRANCOUNT > 0
+        BEGIN
+            ROLLBACK TRANSACTION;
+            PRINT 'An error occurred. Transaction was rolled back.';
+        END
+
+        -- Capture error information.
+        SET @LogMessage = CONCAT(
+            'Error in procedure: ', @ProcedureName, '; ',
+            'Error Number: ', ERROR_NUMBER(), '; ',
+            'Error Line: ', ERROR_LINE(), '; ',
+            'Error Message: ', ERROR_MESSAGE()
+        );
+
+        -- Re-throw the original error to the calling application so it knows the procedure failed.
+        THROW;
+
+    END CATCH
+
+    -- ==========================================================================================
+    -- 10. DYNAMIC SQL
+    -- ==========================================================================================
+    -- Building and executing SQL strings at runtime. Useful but must be handled
+    -- carefully to prevent SQL Injection. ALWAYS use sp_executesql with parameters.
+
+    DECLARE @DynamicSQL NVARCHAR(MAX);
+    DECLARE @DynamicParamDefinition NVARCHAR(500);
+
+    SET @DynamicSQL = N'SELECT ProductID, ProductName, UnitPrice FROM dbo.Products WHERE CategoryID = @CatID ORDER BY UnitPrice DESC;';
+    SET @DynamicParamDefinition = N'@CatID INT';
+
+    -- Execute the dynamic SQL, passing the parameter safely.
+    -- This is just a demonstration; we are not using its result set here.
+    -- We'll use the @CategoryID from the SP parameters if it's not null, otherwise default to 1.
+    EXEC sp_executesql @DynamicSQL, @DynamicParamDefinition, @CatID = COALESCE(@CategoryID, 1);
+
+
+    -- ==========================================================================================
+    -- 11. FINAL RESULT SET
+    -- ==========================================================================================
+    -- This is the final data that the stored procedure will return to the caller.
+    -- A procedure can return multiple result sets.
+
+    SELECT
+        p.ProductID,
+        p.ProductName,
+        c.CategoryName,
+        p.UnitPrice,
+        ep.PriceRank,
+        (SELECT ProductCount FROM @CategoryCounts cc WHERE cc.CategoryID = p.CategoryID) AS ProductsInCategory,
+        -- CASE Expression: Provides IF-THEN-ELSE logic within a statement.
+        CASE
+            WHEN p.UnitPrice > 200 THEN 'Premium'
+            WHEN p.UnitPrice > 50 THEN 'Mid-Range'
+            ELSE 'Standard'
+        END AS PriceTier
+    FROM
+        dbo.Products p
+    INNER JOIN
+        dbo.Categories c ON p.CategoryID = c.CategoryID
+    INNER JOIN
+        #ExpensiveProducts ep ON p.ProductID = ep.ProductID
+    ORDER BY
+        c.CategoryName, p.UnitPrice DESC;
+
+    -- Clean up the temp table (optional, as it's dropped automatically when the session ends).
+    DROP TABLE #ExpensiveProducts;
+
+    -- By convention, a return value of 0 indicates success.
+    RETURN 0;
+
+END;
+GO
+
+
+-- ==========================================================================================
+-- 12. HOW TO EXECUTE THE STORED PROCEDURE
+-- ==========================================================================================
+PRINT '===== EXECUTING THE STORED PROCEDURE =====';
+
+-- A. Declare variables to hold the output parameter and the TVP.
+DECLARE @AffectedRows INT;
+DECLARE @ProductData dbo.ProductListType;
+
+-- B. Populate the table variable (TVP) with data to be inserted or updated.
+INSERT INTO @ProductData (ProductName, CategoryID, UnitPrice) VALUES
+('Laptop', 1, 1250.99),                 -- This will be an UPDATE
+('High-Quality Stapler', 3, 15.00),     -- This will be an INSERT
+('The C# Player''s Guide', 2, 45.00);    -- This will be an UPDATE
+
+-- C. Execute the procedure.
+EXEC dbo.usp_ComprehensiveSyntaxReference
+    @MinUnitPrice = 20.00,
+    @CategoryID = 1, -- Optional: Filter the CTE for this category
+    @ProductsAffected = @AffectedRows OUTPUT, -- Capture the output value
+    @ProductsToUpsert = @ProductData,
+    @IsTestRun = 0; -- Set to 1 to test the rollback logic
+
+-- D. Check the value of the output parameter.
+SELECT @AffectedRows AS 'Rows Affected by MERGE';
+
+-- E. Verify the changes in the table.
+SELECT * FROM dbo.Products ORDER BY ProductID;
+GO
