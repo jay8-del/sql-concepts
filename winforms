@@ -1,0 +1,244 @@
+
+Here’s how to redo the same **Mini Contact Manager** using **WinForms + SQL Server + EF Core**:
+
+---
+
+# Mini Contact Manager (WinForms + SQL Server) — Step-by-Step
+
+## 1) Prerequisites
+
+* Visual Studio 2022 (or later)
+* SQL Server installed (Express is fine).
+* SQL Server Management Studio (SSMS) recommended.
+* Know your connection string — e.g.
+
+  ```
+  Server=localhost\\SQLEXPRESS;Database=MiniContactManager;Trusted_Connection=True;TrustServerCertificate=True;
+  ```
+
+  *(adjust for your setup — SQL auth uses `User Id=...;Password=...;` instead)*
+
+---
+
+## 2) Create the WinForms project
+
+1. **File → New → Project**
+2. Choose **Windows Forms App (.NET)** (not Framework).
+3. Name: `MiniContactManagerMSSQL`
+4. Framework: .NET 8 (or 6/7).
+5. Click **Create**.
+
+---
+
+## 3) Add EF Core packages
+
+1. **Tools → NuGet Package Manager → Manage NuGet Packages for Solution…**
+2. Install:
+
+   * `Microsoft.EntityFrameworkCore.SqlServer`
+   * `Microsoft.EntityFrameworkCore.Tools`
+
+---
+
+## 4) Create Models and Data folder
+
+### 4.1 Models/Contact.cs
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+namespace MiniContactManagerMSSQL.Models
+{
+    public class Contact
+    {
+        public int Id { get; set; }
+
+        [Required, MaxLength(120)]
+        public string Name { get; set; } = string.Empty;
+
+        [Required, MaxLength(200)]
+        public string Email { get; set; } = string.Empty;
+
+        [MaxLength(40)]
+        public string Phone { get; set; } = string.Empty;
+    }
+}
+```
+
+---
+
+### 4.2 Data/AppDbContext.cs
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using MiniContactManagerMSSQL.Models;
+
+namespace MiniContactManagerMSSQL.Data
+{
+    public class AppDbContext : DbContext
+    {
+        public DbSet<Contact> Contacts => Set<Contact>();
+
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        {
+            // Update your connection string here
+            optionsBuilder.UseSqlServer(
+                "Server=localhost\\SQLEXPRESS;Database=MiniContactManager;Trusted_Connection=True;TrustServerCertificate=True;");
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Contact>()
+                .HasIndex(c => c.Email)
+                .IsUnique();
+        }
+    }
+}
+```
+
+---
+
+### 4.3 Data/ContactRepository.cs
+
+*(same as SQLite version, just uses AppDbContext which now points to SQL Server)*
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using MiniContactManagerMSSQL.Models;
+
+namespace MiniContactManagerMSSQL.Data
+{
+    public class ContactRepository
+    {
+        public ContactRepository()
+        {
+            using var db = new AppDbContext();
+            db.Database.EnsureCreated(); // create DB if not exists
+        }
+
+        public List<Contact> GetAll()
+        {
+            using var db = new AppDbContext();
+            return db.Contacts.AsNoTracking().OrderBy(c => c.Name).ToList();
+        }
+
+        public List<Contact> Search(string term)
+        {
+            term = term?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(term)) return GetAll();
+
+            using var db = new AppDbContext();
+            return db.Contacts.AsNoTracking()
+                .Where(c => EF.Functions.Like(c.Name, $"%{term}%") 
+                         || EF.Functions.Like(c.Email, $"%{term}%"))
+                .OrderBy(c => c.Name)
+                .ToList();
+        }
+
+        public Contact Add(Contact contact)
+        {
+            using var db = new AppDbContext();
+            db.Contacts.Add(contact);
+            db.SaveChanges();
+            return contact;
+        }
+
+        public void Update(Contact contact)
+        {
+            using var db = new AppDbContext();
+            db.Contacts.Update(contact);
+            db.SaveChanges();
+        }
+
+        public void Delete(int id)
+        {
+            using var db = new AppDbContext();
+            var stub = new Contact { Id = id };
+            db.Entry(stub).State = EntityState.Deleted;
+            db.SaveChanges();
+        }
+    }
+}
+```
+
+---
+
+## 5) Create the database
+
+You have two options:
+
+**Option A (automatic):**
+
+* When the app runs, `EnsureCreated()` will make the DB and `Contacts` table.
+* Quick but not flexible.
+
+**Option B (recommended for teaching):**
+
+* Use EF Core Migrations.
+
+  1. Open **Package Manager Console** (Tools → NuGet Package Manager).
+  2. Run:
+
+     ```
+     Add-Migration InitialCreate
+     Update-Database
+     ```
+
+  * This creates the DB schema properly in SQL Server.
+
+---
+
+## 6) UI Design
+
+Same as in the SQLite version:
+
+* `MenuStrip` → File → Exit, Help → About
+* `DataGridView dgvContacts`
+* TextBoxes: `txtName`, `txtEmail`, `txtPhone`
+* Buttons: Add, Edit, Delete, Search, Clear
+
+Wire up events exactly as before.
+
+---
+
+## 7) Form1.cs logic
+
+The **Form1.cs** code from the SQLite version can be reused *without changes*.
+
+* It uses `_repo` → which uses `AppDbContext` → which points to SQL Server.
+* All UI logic (validation, refresh, CRUD, search, about box) works the same.
+
+---
+
+## 8) Run & Verify
+
+1. Build and run (F5).
+2. On first run, database + `Contacts` table are created.
+3. Add/Edit/Delete/Search contacts.
+4. Verify in SQL Server Management Studio:
+
+   ```sql
+   SELECT * FROM MiniContactManager.dbo.Contacts;
+   ```
+
+---
+
+## 9) Junior pitfalls to warn about
+
+* **Connection string wrong** → common mistake. Use SSMS to test.
+* **Migrations not run** → empty DB. Teach them `Update-Database`.
+* **Unique email constraint** → adding duplicate emails will throw an exception. Catch & show message.
+* **TrustServerCertificate=True** → needed if using local SQL Express with encryption.
+
+---
+
+## 10) Checklist
+
+* [ ] Project builds
+* [ ] DB auto-created or migrated
+* [ ] Add/Edit/Delete/Search works
+* [ ] Data persists across app restarts
+* [ ] About/Exit menu works
+
+---
+
