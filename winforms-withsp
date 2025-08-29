@@ -1,0 +1,364 @@
+
+# 📝 Step-by-Step Guide: Mini Contact Manager (WinForms + SQL Server + Stored Procedures)
+
+---
+
+## 1. Database Setup in SQL Server
+
+1. Open **SQL Server Management Studio (SSMS)**.
+2. Create a database:
+
+   ```sql
+   CREATE DATABASE ContactManagerDB;
+   GO
+   ```
+3. Create the `Contacts` table:
+
+   ```sql
+   USE ContactManagerDB;
+
+   CREATE TABLE Contacts (
+       Id INT PRIMARY KEY IDENTITY(1,1),
+       Name NVARCHAR(100) NOT NULL,
+       Email NVARCHAR(100),
+       Phone NVARCHAR(20)
+   );
+   ```
+4. Create Stored Procedures for CRUD:
+
+   ```sql
+   -- Insert Contact
+   CREATE PROCEDURE sp_AddContact
+       @Name NVARCHAR(100),
+       @Email NVARCHAR(100),
+       @Phone NVARCHAR(20)
+   AS
+   BEGIN
+       INSERT INTO Contacts (Name, Email, Phone)
+       VALUES (@Name, @Email, @Phone);
+   END;
+   GO
+
+   -- Update Contact
+   CREATE PROCEDURE sp_UpdateContact
+       @Id INT,
+       @Name NVARCHAR(100),
+       @Email NVARCHAR(100),
+       @Phone NVARCHAR(20)
+   AS
+   BEGIN
+       UPDATE Contacts
+       SET Name = @Name, Email = @Email, Phone = @Phone
+       WHERE Id = @Id;
+   END;
+   GO
+
+   -- Delete Contact
+   CREATE PROCEDURE sp_DeleteContact
+       @Id INT
+   AS
+   BEGIN
+       DELETE FROM Contacts WHERE Id = @Id;
+   END;
+   GO
+
+   -- Get All Contacts
+   CREATE PROCEDURE sp_GetAllContacts
+   AS
+   BEGIN
+       SELECT * FROM Contacts ORDER BY Name;
+   END;
+   GO
+
+   -- Search Contact
+   CREATE PROCEDURE sp_SearchContacts
+       @Search NVARCHAR(100)
+   AS
+   BEGIN
+       SELECT * FROM Contacts
+       WHERE Name LIKE '%' + @Search + '%'
+          OR Email LIKE '%' + @Search + '%';
+   END;
+   GO
+   ```
+
+✅ Database is ready.
+
+---
+
+## 2. Create WinForms Project
+
+1. Open **Visual Studio** → `Create a new project`.
+2. Choose **Windows Forms App (.NET Framework)** (not .NET Core for simplicity).
+3. Name it: `ContactManagerWinForms`.
+4. Solution Explorer → Right-click project → **Manage NuGet Packages** → Install:
+
+   * `System.Data.SqlClient` (if not already available).
+
+---
+
+## 3. Project Structure
+
+Inside the project:
+
+* **Models**
+
+  * `Contact.cs`
+* **Data**
+
+  * `ContactRepository.cs`
+* **Forms**
+
+  * `MainForm.cs`
+
+---
+
+## 4. Create the Contact Model
+
+```csharp
+namespace ContactManagerWinForms.Models
+{
+    public class Contact
+    {
+        public int Id { get; set; } // Primary Key
+        public string Name { get; set; }
+        public string Email { get; set; }
+        public string Phone { get; set; }
+    }
+}
+```
+
+---
+
+## 5. Create Repository for DB Access
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+using ContactManagerWinForms.Models;
+
+namespace ContactManagerWinForms.Data
+{
+    public class ContactRepository
+    {
+        private readonly string _connectionString =
+            "Server=YOUR_SERVER_NAME;Database=ContactManagerDB;Trusted_Connection=True;";
+
+        public List<Contact> GetAllContacts()
+        {
+            var contacts = new List<Contact>();
+
+            using (SqlConnection conn = new SqlConnection(_connectionString))
+            using (SqlCommand cmd = new SqlCommand("sp_GetAllContacts", conn))
+            {
+                cmd.CommandType = CommandType.StoredProcedure;
+                conn.Open();
+                SqlDataReader reader = cmd.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    contacts.Add(new Contact
+                    {
+                        Id = (int)reader["Id"],
+                        Name = reader["Name"].ToString(),
+                        Email = reader["Email"].ToString(),
+                        Phone = reader["Phone"].ToString()
+                    });
+                }
+            }
+            return contacts;
+        }
+
+        public void AddContact(Contact contact)
+        {
+            using (SqlConnection conn = new SqlConnection(_connectionString))
+            using (SqlCommand cmd = new SqlCommand("sp_AddContact", conn))
+            {
+                cmd.CommandType = CommandType.StoredProcedure;
+                cmd.Parameters.AddWithValue("@Name", contact.Name);
+                cmd.Parameters.AddWithValue("@Email", contact.Email);
+                cmd.Parameters.AddWithValue("@Phone", contact.Phone);
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        public void UpdateContact(Contact contact)
+        {
+            using (SqlConnection conn = new SqlConnection(_connectionString))
+            using (SqlCommand cmd = new SqlCommand("sp_UpdateContact", conn))
+            {
+                cmd.CommandType = CommandType.StoredProcedure;
+                cmd.Parameters.AddWithValue("@Id", contact.Id);
+                cmd.Parameters.AddWithValue("@Name", contact.Name);
+                cmd.Parameters.AddWithValue("@Email", contact.Email);
+                cmd.Parameters.AddWithValue("@Phone", contact.Phone);
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        public void DeleteContact(int id)
+        {
+            using (SqlConnection conn = new SqlConnection(_connectionString))
+            using (SqlCommand cmd = new SqlCommand("sp_DeleteContact", conn))
+            {
+                cmd.CommandType = CommandType.StoredProcedure;
+                cmd.Parameters.AddWithValue("@Id", id);
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        public List<Contact> SearchContacts(string search)
+        {
+            var contacts = new List<Contact>();
+
+            using (SqlConnection conn = new SqlConnection(_connectionString))
+            using (SqlCommand cmd = new SqlCommand("sp_SearchContacts", conn))
+            {
+                cmd.CommandType = CommandType.StoredProcedure;
+                cmd.Parameters.AddWithValue("@Search", search);
+                conn.Open();
+                SqlDataReader reader = cmd.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    contacts.Add(new Contact
+                    {
+                        Id = (int)reader["Id"],
+                        Name = reader["Name"].ToString(),
+                        Email = reader["Email"].ToString(),
+                        Phone = reader["Phone"].ToString()
+                    });
+                }
+            }
+            return contacts;
+        }
+    }
+}
+```
+
+---
+
+## 6. Build the UI
+
+Open **MainForm.cs** in the Designer and add:
+
+* **DataGridView** → `dgvContacts`
+* **TextBox** → `txtName`, `txtEmail`, `txtPhone`, `txtSearch`
+* **Buttons** → `btnAdd`, `btnEdit`, `btnDelete`, `btnSearch`, `btnClear`
+* **MenuStrip** → `File -> Exit`, `Help -> About`
+
+---
+
+## 7. Hook Up UI with Repository
+
+```csharp
+using ContactManagerWinForms.Data;
+using ContactManagerWinForms.Models;
+using System;
+using System.Collections.Generic;
+using System.Windows.Forms;
+
+namespace ContactManagerWinForms
+{
+    public partial class MainForm : Form
+    {
+        private readonly ContactRepository _repo = new ContactRepository();
+
+        public MainForm()
+        {
+            InitializeComponent();
+        }
+
+        private void MainForm_Load(object sender, EventArgs e)
+        {
+            LoadContacts();
+        }
+
+        private void LoadContacts()
+        {
+            var contacts = _repo.GetAllContacts();
+            dgvContacts.DataSource = contacts;
+        }
+
+        private void btnAdd_Click(object sender, EventArgs e)
+        {
+            var contact = new Contact
+            {
+                Name = txtName.Text,
+                Email = txtEmail.Text,
+                Phone = txtPhone.Text
+            };
+
+            _repo.AddContact(contact);
+            LoadContacts();
+        }
+
+        private void btnEdit_Click(object sender, EventArgs e)
+        {
+            if (dgvContacts.CurrentRow != null)
+            {
+                var contact = new Contact
+                {
+                    Id = (int)dgvContacts.CurrentRow.Cells["Id"].Value,
+                    Name = txtName.Text,
+                    Email = txtEmail.Text,
+                    Phone = txtPhone.Text
+                };
+
+                _repo.UpdateContact(contact);
+                LoadContacts();
+            }
+        }
+
+        private void btnDelete_Click(object sender, EventArgs e)
+        {
+            if (dgvContacts.CurrentRow != null)
+            {
+                int id = (int)dgvContacts.CurrentRow.Cells["Id"].Value;
+                _repo.DeleteContact(id);
+                LoadContacts();
+            }
+        }
+
+        private void btnSearch_Click(object sender, EventArgs e)
+        {
+            string search = txtSearch.Text;
+            dgvContacts.DataSource = _repo.SearchContacts(search);
+        }
+
+        private void btnClear_Click(object sender, EventArgs e)
+        {
+            txtName.Clear();
+            txtEmail.Clear();
+            txtPhone.Clear();
+            txtSearch.Clear();
+            LoadContacts();
+        }
+    }
+}
+```
+
+---
+
+## 8. About Box (Optional Bonus)
+
+* Right-click project → Add → Windows Form → `AboutForm.cs`.
+* Add a label: `"Mini Contact Manager\nDeveloper: Jay\nVersion 1.0"`.
+* In menu `Help -> About`, open `new AboutForm().ShowDialog();`.
+
+---
+
+## ✅ Outcome
+
+* On app start → Grid loads all contacts (`sp_GetAllContacts`).
+* Add/Edit/Delete → Call stored procedures, grid refreshes.
+* Search → Uses `sp_SearchContacts`.
+* UI fully responsive.
+
+---
+
